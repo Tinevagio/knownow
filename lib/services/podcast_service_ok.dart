@@ -314,27 +314,8 @@ fournies dans le message. Par défaut, une partie ENCHAÎNE sur la précédente 
 - pas de mini-conclusion à la fin d'une partie qui n'est pas la dernière.
 Tu n'accroches qu'en partie 1, tu ne conclus qu'en dernière partie.''';
 
-  /// Garde-fou anti-hallucination, ajouté à TOUS les niveaux. Critique pour
-  /// une app "tout sujet" : la fiche demande une citation + un chiffre, et le
-  /// QCM des "bonnes réponses" — autant d'endroits où un fait inventé devient
-  /// une affirmation fausse servie à l'auditeur.
-  static const String _noteFiabilite = '''
-
-────────────────────
-FIABILITÉ (RÈGLE NON NÉGOCIABLE)
-────────────────────
-
-- N'invente JAMAIS une citation, une date, un chiffre ou un nom propre précis.
-- Un outil de recherche web est à ta disposition : sur les faits précis
-  (dates, chiffres, citations, attributions), appuie-toi dessus.
-- Dans le doute sur un détail, reste qualitatif ("vers le milieu du XIXe
-  siècle", "une large majorité") plutôt que de fabriquer une fausse précision.
-- Mieux vaut une idée vraie et un peu vague qu'un détail précis et faux.
-- Une citation entre guillemets doit être réellement attribuable à son auteur ;
-  sinon, paraphrase sans guillemets.''';
-
   static String _buildSystemPrompt(NiveauEditorial niveau) {
-    return '${_styleParNiveau(niveau)}\n$_noteContinuite\n$_noteFiabilite';
+    return '${_styleParNiveau(niveau)}\n$_noteContinuite';
   }
 
   static String _styleParNiveau(NiveauEditorial niveau) {
@@ -1071,14 +1052,8 @@ ${nbBlocs >= 4 ? 'PARTIE 4 | Titre court | Description courte' : ''}
 ${nbBlocs >= 5 ? 'PARTIE 5 | Titre court | Description courte' : ''}
 ${nbBlocs >= 6 ? 'PARTIE 6 | Titre court | Description courte' : ''}
 
-Choisis d'abord l'ARC NARRATIF le mieux adapté à CE sujet, puis construis les parties dessus :
-- sujet historique ou biographie → récit chronologique (mise en place → bascules → héritage)
-- mécanisme ou concept (science, technique, droit, économie) → énigme de départ → comment ça marche → conséquences et limites
-- question ouverte ou débat (philo, société) → thèse intuitive → objections et tensions → dépassement
-- événement, affaire, enquête → situation initiale → escalade → dénouement et portée
-- panorama d'un domaine → fil qui monte en puissance, du plus concret au plus surprenant
-Si le sujet ne colle à aucun, invente l'arc le plus captivant pour lui.
-Les parties s'enchaînent comme un récit continu : chacune APPROFONDIT une étape distincte de cet arc, sans recouvrir les autres. Aucune partie ne doit pouvoir s'écouter comme un épisode isolé.
+Fil conducteur : contexte → analyse → enjeux → synthèse.
+Les parties s'enchaînent comme un récit continu : chacune APPROFONDIT un angle distinct, sans recouvrir les autres. Aucune partie ne doit pouvoir s'écouter comme un épisode isolé.
 NE COMMENCE PAS par "Voici", "Bien sûr", ou tout autre préambule.
 PREMIÈRE LIGNE de ta réponse = "PARTIE 1 | ..."
 '''
@@ -1237,12 +1212,6 @@ PREMIÈRE LIGNE de ta réponse = "PARTIE 1 | ..."
                 ]
               }
             ],
-            // Ancrage factuel : le modèle peut interroger le web pour vérifier
-            // dates, chiffres et citations. L'outil est DISPONIBLE, pas imposé :
-            // Gemini ne lance une recherche que s'il le juge utile.
-            'tools': [
-              {'google_search': {}}
-            ],
             'generationConfig': {
               'temperature': 0.7,
               'maxOutputTokens': 24000,
@@ -1258,14 +1227,7 @@ PREMIÈRE LIGNE de ta réponse = "PARTIE 1 | ..."
     final data = jsonDecode(response.body);
     final candidate = data['candidates'][0];
     final finishReason = candidate['finishReason'];
-    // Avec l'outil de recherche, la réponse peut contenir plusieurs parts
-    // (et la 1re n'est pas forcément du texte) : on concatène tous les
-    // segments texte au lieu de lire aveuglément parts[0].
-    final parts = (candidate['content']?['parts'] as List?) ?? const [];
-    final rawText = parts
-        .map((p) => (p is Map && p['text'] is String) ? p['text'] as String : '')
-        .where((t) => t.isNotEmpty)
-        .join('\n');
+    final rawText = candidate['content']['parts'][0]['text'] as String;
     final result = _parseReponse(rawText);
     final scriptList = result['script'] as List;
     if (scriptList.isEmpty) {
@@ -1358,21 +1320,11 @@ Réponds en 4 lignes maximum, sans préambule.''';
     required int index,
     required String dirPath,
   }) async {
-    // IMPORTANT — cohérence de la voix :
-    // chaque appel TTS est SANS ÉTAT et recalibre les deux voix de façon
-    // indépendante. Découper un chapitre en plusieurs appels provoque donc
-    // une dérive de timbre audible à la jointure (surtout sur la voix grave
-    // de l'Expert / Charon). On synthétise donc tout le chapitre en UN SEUL
-    // appel tant qu'il tient sous ce seuil, et on ne découpe qu'en dernier
-    // recours pour les chapitres anormalement longs (risque de timeout ou de
-    // troncature côté Gemini).
-    //   → audios tronqués sur de longs chapitres ? BAISSE ce seuil.
-    //   → encore des jointures audibles ? AUGMENTE-le.
-    const motsMaxParAppelTts = 950;
-    final motsChapitre =
-        script.map((r) => r.text.split(' ').length).fold(0, (a, b) => a + b);
+    // Sous-blocs plus petits = appels TTS plus courts, moins de risque
+    // de timeout/hang côté Gemini sur les gros chapitres.
+    const maxRepliquesParSousBloc = 8;
     final nbSousBlocs =
-        (motsChapitre / motsMaxParAppelTts).ceil().clamp(1, 99);
+        (script.length / maxRepliquesParSousBloc).ceil().clamp(1, 99);
     final tailleSousBloc = (script.length / nbSousBlocs).ceil();
     final sousBlocs = List.generate(nbSousBlocs, (i) {
       final debut = i * tailleSousBloc;
@@ -1406,12 +1358,7 @@ Réponds en 4 lignes maximum, sans préambule.''';
       await Future.wait(batch, eagerError: true);
     }
 
-    // Concaténation dans l'ordre d'origine (pcmResults est indexée par j).
-    // Quand un chapitre a dû être découpé (fallback), on insère un court
-    // silence entre deux rendus PCM indépendants : ça évite le "clic" au
-    // raccord et adoucit la micro-rupture de calibration des voix.
-    const padMs = 120;
-    final padBytes = List<int>.filled(24000 * 2 * padMs ~/ 1000, 0); // 16-bit mono @24kHz
+    // Concaténation dans l'ordre d'origine (pcmResults est indexée par j)
     final allPcm = <int>[];
     for (int j = 0; j < nbSousBlocs; j++) {
       final pcm = pcmResults[j];
@@ -1419,7 +1366,6 @@ Réponds en 4 lignes maximum, sans préambule.''';
         throw Exception(
             'TTS chapitre ${index + 1} sous-bloc $j : résultat manquant');
       }
-      if (j > 0) allPcm.addAll(padBytes);
       allPcm.addAll(pcm);
     }
 
@@ -1823,7 +1769,7 @@ Réponds en 4 lignes maximum, sans préambule.''';
       position =
           'DERNIÈRE partie. Tu prolonges DIRECTEMENT la partie précédente : AUCUNE accroche, '
           'AUCUNE re-présentation du sujet. Première réplique = une relance qui reprend le fil '
-          'exact là où il s\'est arrêté. Puis conclus de manière mémorable, en bouclant l\'arc du podcast (héritage, portée, ou ouverture, selon le sujet).';
+          'exact là où il s\'est arrêté. Puis conclus de manière mémorable, en ouvrant sur les enjeux contemporains.';
     } else {
       position =
           'Partie $partie/$totalParties, AU MILIEU d\'une conversation déjà en cours. '
@@ -1841,8 +1787,8 @@ FICHE:
 - point cle 1 (concept central développé)
 - point cle 2 (argument ou fait marquant)
 - point cle 3 (enjeu ou perspective)
-CITATION: une citation réellement attribuable à son auteur (laisse vide si tu n'es pas certain)
-CHIFFRE: un chiffre ou une date vérifiable réellement cité dans le podcast (laisse vide si incertain)
+CITATION: une citation d'auteur mentionné dans le podcast
+CHIFFRE: un chiffre ou date clé cité dans le podcast
 
 QCM:
 Q: question 1 basée sur le podcast
